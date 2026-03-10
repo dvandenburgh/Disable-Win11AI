@@ -1,14 +1,25 @@
 #requires -RunAsAdministrator
 <#
-    Disable most Windows 11 "AI" features:
+    Disable Windows 11 "AI" features (updated for 24H2 / 25H2):
       - Copilot button + Copilot feature
       - AI web/Bing integration in Start/Taskbar search
       - Search/Copilot icons in Windows Search & File Explorer suggestions
       - Recall (on Copilot+ PCs)
+      - Click to Do (Win+Q on-screen AI, Copilot+ PCs)        [NEW in 24H2/25H2]
+      - Recall snapshot export policy                          [NEW in 25H2]
       - Widgets / Windows Web Experience Pack
       - Auto-suggest in Explorer address bar / Run dialog
+      - AI Actions in File Explorer context menu               [NEW in 25H2]
+      - Paint AI features: Image Creator, Generative Fill,
+        Cocreator                                              [NEW in 24H2/25H2]
+      - Start menu Recommended / promoted content section      [NEW in 24H2/25H2]
 
     Logs to: C:\Users\Public\Disable_AIFeatures_YYYYMMDD_HHMMSS.log
+
+    NOTE: Sections 6-9 target features added in Windows 11 24H2 and 25H2.
+    Sections that apply only to Copilot+ PC hardware (Recall, Click to Do)
+    are safe to apply on any machine - they simply no-op if the hardware
+    is not present.
 #>
 
 $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
@@ -45,7 +56,6 @@ function Set-RegValue {
     )
 
     try {
-        # FIXED: use ${Hive} so PowerShell doesn't think $Hive: is a variable
         $fullPath = "${Hive}:\$Path"
 
         if (-not (Test-Path $fullPath)) {
@@ -69,13 +79,11 @@ function Set-RegValue {
 try {
     Ensure-Admin
 } catch {
-    # Already logged; hard abort
     return
 }
 
 Write-Log "Log file: $logPath"
 
-# Try to create a restore point (may fail if disabled)
 try {
     Write-Log "Attempting to create system restore point 'Before_AI_Disable'"
     Checkpoint-Computer -Description "Before_AI_Disable" -RestorePointType "MODIFY_SETTINGS" -ErrorAction Stop
@@ -87,24 +95,28 @@ try {
 # -----------------------------
 # 1. Disable web/Bing + AI-ish suggestions in Start / Search / Explorer
 # -----------------------------
-Write-Log "Disabling Bing/web results and AI-ish search suggestions in Start/Taskbar Search and Explorer."
+Write-Log "--- Section 1: Disabling Bing/web results and AI search suggestions ---"
 
-# Disable Copilot + Web icons & web suggestions in Windows Search, and also Explorer search box suggestions
-# HKCU\Software\Policies\Microsoft\Windows\Explorer - DisableSearchBoxSuggestions = 1
+# Disable search box suggestions (Explorer address bar, Run dialog) - per-user
 Set-RegValue -Hive 'HKCU' -Path 'Software\Policies\Microsoft\Windows\Explorer' -Name 'DisableSearchBoxSuggestions' -Value 1 -Type 'DWord'
+
+# Same key at machine scope - ensures it sticks for all users / new profiles
+Set-RegValue -Hive 'HKLM' -Path 'SOFTWARE\Policies\Microsoft\Windows\Explorer' -Name 'DisableSearchBoxSuggestions' -Value 1 -Type 'DWord'
 
 # Disable web search engine calls from Windows Search (policy variant)
 Set-RegValue -Hive 'HKLM' -Path 'SOFTWARE\Policies\Microsoft\Windows\Windows Search' -Name 'DisableWebSearch' -Value 1 -Type 'DWord'
 
-# Turn off Explorer/Run autosuggest (those "smart" suggestions in address bar / Run)
+# Disable Connected Search (also prevents Bing results bleeding into Search)
+Set-RegValue -Hive 'HKLM' -Path 'SOFTWARE\Policies\Microsoft\Windows\Windows Search' -Name 'ConnectedSearchUseWeb' -Value 0 -Type 'DWord'
+
+# Turn off Explorer/Run autosuggest (address bar "smart" suggestions)
 Set-RegValue -Hive 'HKCU' -Path 'Software\Microsoft\Windows\CurrentVersion\Explorer\AutoComplete' -Name 'AutoSuggest' -Value 'no' -Type 'String'
 
 # -----------------------------
 # 2. Disable Windows Copilot (system-wide + hide button)
 # -----------------------------
-Write-Log "Disabling Windows Copilot via policy and hiding taskbar button."
+Write-Log "--- Section 2: Disabling Windows Copilot and hiding taskbar button ---"
 
-# Policy key to turn off Copilot
 Set-RegValue -Hive 'HKCU' -Path 'Software\Policies\Microsoft\Windows\WindowsCopilot' -Name 'TurnOffWindowsCopilot' -Value 1 -Type 'DWord'
 Set-RegValue -Hive 'HKLM' -Path 'SOFTWARE\Policies\Microsoft\Windows\WindowsCopilot' -Name 'TurnOffWindowsCopilot' -Value 1 -Type 'DWord'
 
@@ -114,7 +126,7 @@ Set-RegValue -Hive 'HKCU' -Path 'Software\Microsoft\Windows\CurrentVersion\Explo
 # -----------------------------
 # 3. Try to uninstall Microsoft Copilot app (if present)
 # -----------------------------
-Write-Log "Trying to uninstall Microsoft Copilot app packages for the current user (if installed)."
+Write-Log "--- Section 3: Removing Copilot Appx package (if installed) ---"
 
 try {
     $copilotPkgs = Get-AppxPackage -Name '*Copilot*' -ErrorAction SilentlyContinue
@@ -142,23 +154,21 @@ catch {
 # -----------------------------
 # 4. Disable Recall / AI data capture (Copilot+ PCs only)
 # -----------------------------
-Write-Log "Configuring policies to disable Windows Recall and AI snapshotting (if present)."
+Write-Log "--- Section 4: Disabling Recall AI snapshotting and export (Copilot+ PCs) ---"
 
-# Recall / WindowsAI policies:
-# HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsAI
-#   AllowRecallEnablement   = 0  (don't allow Recall to be enabled)
-#   DisableAIDataAnalysis   = 1  (block saving/analyzing screen snapshots for Recall)
-
-Set-RegValue -Hive 'HKLM' -Path 'SOFTWARE\Policies\Microsoft\Windows\WindowsAI' -Name 'AllowRecallEnablement' -Value 0 -Type 'DWord'
-Set-RegValue -Hive 'HKLM' -Path 'SOFTWARE\Policies\Microsoft\Windows\WindowsAI' -Name 'DisableAIDataAnalysis' -Value 1 -Type 'DWord'
+# AllowRecallEnablement = 0  -> block Recall from being enabled at all
+# DisableAIDataAnalysis  = 1  -> block saving/analyzing screen snapshots
+# AllowSnapshotExport    = 0  -> block users from exporting Recall snapshot data [NEW 25H2]
+Set-RegValue -Hive 'HKLM' -Path 'SOFTWARE\Policies\Microsoft\Windows\WindowsAI' -Name 'AllowRecallEnablement'  -Value 0 -Type 'DWord'
+Set-RegValue -Hive 'HKLM' -Path 'SOFTWARE\Policies\Microsoft\Windows\WindowsAI' -Name 'DisableAIDataAnalysis'  -Value 1 -Type 'DWord'
+Set-RegValue -Hive 'HKLM' -Path 'SOFTWARE\Policies\Microsoft\Windows\WindowsAI' -Name 'AllowSnapshotExport'    -Value 0 -Type 'DWord'
 
 # -----------------------------
 # 5. Remove Widgets / Windows Web Experience Pack
 # -----------------------------
-Write-Log "Attempting to remove Windows Web Experience Pack (Widgets and some cloud/home feed bits)."
+Write-Log "--- Section 5: Removing Windows Web Experience Pack (Widgets) ---"
 
 try {
-    # Package providing Widgets & related features: MicrosoftWindows.Client.WebExperience
     $webExp = Get-AppxPackage -Name 'MicrosoftWindows.Client.WebExperience' -ErrorAction SilentlyContinue
 
     if ($webExp) {
@@ -174,7 +184,7 @@ try {
         }
     }
     else {
-        Write-Log "MicrosoftWindows.Client.WebExperience is not installed (or already removed) for this user."
+        Write-Log "MicrosoftWindows.Client.WebExperience not found (already removed or not installed)."
     }
 }
 catch {
@@ -182,7 +192,64 @@ catch {
 }
 
 # -----------------------------
-# 6. Finish
+# 6. Disable Click to Do (Win+Q on-screen AI, 24H2 / 25H2 Copilot+ PCs)
+# [NEW] Click to Do is an on-screen AI overlay that identifies text and images
+# under your cursor and offers AI actions on them. Policy key lives in WindowsAI.
+# Safe to set on non-Copilot+ hardware; it simply has no effect.
+# -----------------------------
+Write-Log "--- Section 6: Disabling Click to Do (Copilot+ on-screen AI) ---"
+
+# Policy path (enforced, overrides user toggle in Settings)
+Set-RegValue -Hive 'HKLM' -Path 'SOFTWARE\Policies\Microsoft\Windows\WindowsAI' -Name 'DisableClickToDo' -Value 1 -Type 'DWord'
+Set-RegValue -Hive 'HKCU' -Path 'Software\Policies\Microsoft\Windows\WindowsAI'  -Name 'DisableClickToDo' -Value 1 -Type 'DWord'
+
+# Per-user shell key (Settings toggle target; belt-and-suspenders)
+Set-RegValue -Hive 'HKCU' -Path 'Software\Microsoft\Windows\Shell\ClickToDo'     -Name 'DisableClickToDo' -Value 1 -Type 'DWord'
+
+# -----------------------------
+# 7. Disable AI Actions in File Explorer context menu
+# [NEW in 25H2] "AI Actions" adds an AI submenu to the right-click context
+# menu in File Explorer, offering actions like summarise, rewrite, etc.
+# HideAIActionsMenu = 1 removes the entire submenu for all users on this machine.
+# -----------------------------
+Write-Log "--- Section 7: Hiding AI Actions from File Explorer context menu ---"
+
+Set-RegValue -Hive 'HKLM' -Path 'SOFTWARE\Policies\Microsoft\Windows\Explorer' -Name 'HideAIActionsMenu' -Value 1 -Type 'DWord'
+
+# -----------------------------
+# 8. Disable Paint AI features (Image Creator, Generative Fill, Cocreator)
+# [NEW in 24H2/25H2] Microsoft added AI-powered features to the inbox Paint app.
+# These policy DWORDs disable each feature individually.
+# Note: "Generative Erase" and "Remove Background" do not yet have policy keys.
+# -----------------------------
+Write-Log "--- Section 8: Disabling Paint AI features (Image Creator, Generative Fill, Cocreator) ---"
+
+$paintPolicyPath = 'SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Paint'
+Set-RegValue -Hive 'HKLM' -Path $paintPolicyPath -Name 'DisableImageCreator'   -Value 1 -Type 'DWord'
+Set-RegValue -Hive 'HKLM' -Path $paintPolicyPath -Name 'DisableGenerativeFill' -Value 1 -Type 'DWord'
+Set-RegValue -Hive 'HKLM' -Path $paintPolicyPath -Name 'DisableCocreator'      -Value 1 -Type 'DWord'
+
+# -----------------------------
+# 9. Hide Start menu Recommended / promoted content section
+# [NEW in 24H2/25H2] The "Recommended" section in the Start menu shows recent
+# files, promoted apps, and AI-surfaced suggestions. Two keys are required;
+# the IsEducationEnvironment flag is the only reliable cross-edition method
+# to fully suppress this section (Pro policy key alone is insufficient on Home).
+# NOTE: This requires Windows 11 Pro or higher for the HideRecommendedSection
+# key to take effect. On Home editions only IsEducationEnvironment applies.
+# -----------------------------
+Write-Log "--- Section 9: Suppressing Start menu Recommended / promoted content ---"
+
+# Pro/Enterprise/Edu policy key
+Set-RegValue -Hive 'HKLM' -Path 'SOFTWARE\Policies\Microsoft\Windows\Explorer'                      -Name 'HideRecommendedSection'  -Value 1 -Type 'DWord'
+Set-RegValue -Hive 'HKCU' -Path 'Software\Policies\Microsoft\Windows\Explorer'                      -Name 'HideRecommendedSection'  -Value 1 -Type 'DWord'
+
+# Education environment flag - suppresses promoted/AI suggestions in Start on all editions
+Set-RegValue -Hive 'HKLM' -Path 'SOFTWARE\Microsoft\PolicyManager\current\device\Education'         -Name 'IsEducationEnvironment'  -Value 1 -Type 'DWord'
+
+# -----------------------------
+# 10. Finish
 # -----------------------------
 Write-Log "All sections completed. A system reboot is recommended to apply all changes."
-Write-Log "If something feels off, you can use the 'Before_AI_Disable' restore point (if it was created successfully)."
+Write-Log "If something feels off, use the 'Before_AI_Disable' restore point (if created)."
+Write-Log "Log saved to: $logPath"
